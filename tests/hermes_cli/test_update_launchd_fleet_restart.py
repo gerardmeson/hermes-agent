@@ -204,6 +204,7 @@ class TestGetServicePidsScoping:
         monkeypatch.setattr(gw, "is_macos", lambda: True)
         monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gw, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gw, "_launchd_home_is_managed_by_this_install", lambda: True)
         monkeypatch.setattr(
             gw,
             "launchd_gateway_labels_for_install",
@@ -246,6 +247,7 @@ class TestGetServicePidsScoping:
             lambda all_profiles=False: (calls.append(all_profiles), set())[1],
         )
         monkeypatch.setattr(gw, "_scan_gateway_pids", lambda *a, **k: [])
+        monkeypatch.setattr(gw, "_launchd_home_is_managed_by_this_install", lambda: True)
         monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
 
         gw.find_gateway_pids(all_profiles=False)

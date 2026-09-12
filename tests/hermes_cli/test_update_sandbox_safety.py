@@ -28,6 +28,21 @@ def test_sandboxed_home_has_no_launchd_restart_targets(monkeypatch, tmp_path):
     assert gateway.launchd_gateway_labels_for_install() == []
 
 
+def test_sandboxed_home_does_not_adopt_default_launchd_service_pid(monkeypatch, tmp_path):
+    """A non-canonical rehearsal must not stop the account's real launchd gateway PID."""
+    canonical_root = tmp_path / "canonical-hermes"
+    sandbox_home = tmp_path / "rehearsal-home"
+    monkeypatch.setattr(gateway, "get_default_hermes_root", lambda: sandbox_home)
+    monkeypatch.setattr(
+        gateway, "_get_platform_default_hermes_home", lambda: canonical_root, raising=False
+    )
+    monkeypatch.setattr(gateway, "get_hermes_home", lambda: sandbox_home)
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda all_profiles=False: [4242])
+    monkeypatch.setattr(gateway, "_scan_gateway_pids", lambda *args, **kwargs: [])
+
+    assert gateway.find_gateway_pids(all_profiles=True) == []
+
+
 def test_canonical_home_keeps_its_launchd_restart_targets(monkeypatch, tmp_path):
     canonical_root = tmp_path / "canonical-hermes"
     monkeypatch.setattr(gateway, "get_default_hermes_root", lambda: canonical_root)
@@ -62,6 +77,7 @@ def test_sandboxed_home_ignores_unscoped_default_gateway(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_status, "looks_like_gateway_command_line", lambda command: True)
 
     assert gateway._scan_gateway_pids(set()) == []
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == []
 
 
 def test_sandboxed_home_skips_the_direct_launchd_restart(monkeypatch):

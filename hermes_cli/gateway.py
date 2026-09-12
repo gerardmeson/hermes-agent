@@ -607,7 +607,14 @@ def _scan_gateway_pids(
         matches_runtime = looks_like_gateway_command_line(command) or (
             include_restart_managers and looks_like_gateway_runtime_command_line(command)
         )
-        if matches_runtime and (all_profiles or _matches_current_profile(command)):
+        # ``all_profiles`` expands scope only within the canonical install. A non-canonical
+        # rehearsal must still prove ownership through its exact HERMES_HOME marker.
+        matches_scope = (
+            _launchd_home_is_managed_by_this_install() or _matches_current_profile(command)
+            if all_profiles
+            else _matches_current_profile(command)
+        )
+        if matches_runtime and matches_scope:
             _append_unique_pid(pids, pid, exclude_pids)
 
     try:
@@ -741,8 +748,12 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids(all_profiles=all_profiles):
-        _append_unique_pid(pids, pid, _exclude)
+    # Per-user launchd labels are account-global. A rehearsal or side-by-side checkout
+    # must never adopt the canonical install's service PID, even for the default profile.
+    # The process-table scan below has the same ownership guard; keep both paths aligned.
+    if not (is_macos() and not _launchd_home_is_managed_by_this_install()):
+        for pid in _get_service_pids(all_profiles=all_profiles):
+            _append_unique_pid(pids, pid, _exclude)
     try:
         include_restart_managers = not supports_systemd_services()
     except Exception:
