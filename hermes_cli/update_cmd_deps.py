@@ -21,6 +21,45 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 _INSTALL_DEFINING_FILES = "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "uv.lock"
 
 
+def _enforce_post_dependency_security_gate() -> None:
+    """Fresh target-interpreter check; unknown metadata is never a successful gate.
+
+    No inherited credentials, site hooks or user packages enter the child. This
+    offline catalog detects known regressions, not newly disclosed advisories.
+    """
+    import tempfile
+    from hermes_cli.update_cmd import _m, _record_update_step
+
+    root = Path(_m().PROJECT_ROOT)
+    target = root / "venv"
+    if not target.is_dir():
+        target = root / ".venv"
+    interpreter = venv_python_path(target, windows=_m()._is_windows())
+    probe = Path(__file__).with_name("dependency_security.py")
+    detail = "unknown: probe failed"
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-security-") as home:
+            env = {"HOME": home, "HERMES_HOME": home, "PYTHONDONTWRITEBYTECODE": "1"}
+            if os.name == "nt" and "SYSTEMROOT" in os.environ:
+                env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+            result = subprocess.run(
+                [str(interpreter), "-I", "-S", str(probe), "--venv", str(target)],
+                cwd=home, env=env, capture_output=True, text=True, timeout=30)
+        report = json.loads(result.stdout)
+        if (result.returncode == 0 and report.get("schema") == 1
+                and report.get("scope") == "offline-known-dependency-regressions"
+                and report.get("status") == "clear" and report.get("issues") == []
+                and report.get("findings") == []
+                and all(report.get("versions", {}).get(p) for p in ("mcp", "httpx2", "httpcore2"))):
+            _record_update_step("dependency_security", True, "offline known-regression check clear")
+            return
+        detail = "unknown or known dependency findings; run the isolated dependency probe"
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+        detail = f"unknown: {type(exc).__name__}"
+    _record_update_step("dependency_security", False, detail)
+    raise RuntimeError("Update dependency security check blocked activation: " + detail)
+
+
 def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool:
     """True when the pulled commits cannot have invalidated the editable install: ``uv pip install
     -e .`` always rewrites console-script shims (Windows: ``hermes.exe`` quarantine, ``os error 32``
@@ -1050,3 +1089,8 @@ def _sync_python_dependencies_after_pull(
         print(f"      {import_error}")
         print("    Run `hermes update` again — if it persists, reinstall:")
         print("    https://hermes-agent.nousresearch.com")
+
+    # This is the final dependency gate before the caller can rebuild the desktop or restart
+    # gateways. A source/lock regression must fail the receipt instead of becoming a clean-looking
+    # runtime restart with a vulnerable venv.
+    _enforce_post_dependency_security_gate()

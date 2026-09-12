@@ -81,12 +81,14 @@ class _Profile:
 
 
 class TestLaunchdGatewayLabelsForInstall:
-    def test_labels_derive_from_this_installs_profiles(self, monkeypatch):
+    def test_labels_derive_from_this_installs_profiles(self, monkeypatch, tmp_path):
         """The fleet is THIS install's profiles, root first — never a glob of
         the shared per-user LaunchAgents dir. A sandboxed HERMES_HOME (tests,
         side-by-side installs) must not enumerate — and restart — another
         install's services, and the hermetic test suite must not see the dev
         machine's real fleet."""
+        monkeypatch.setattr(gw, "_get_platform_default_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gw, "get_hermes_home", lambda: tmp_path)
         monkeypatch.setattr(
             hermes_cli.profiles,
             "list_profiles",
@@ -103,7 +105,9 @@ class TestLaunchdGatewayLabelsForInstall:
             "ai.hermes.gateway-tfl-wiki",
         ]
 
-    def test_no_profiles_means_no_fleet(self, monkeypatch):
+    def test_no_profiles_means_no_fleet(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gw, "get_default_hermes_root", lambda: tmp_path)
+        monkeypatch.setattr(gw, "get_hermes_home", lambda: tmp_path)
         monkeypatch.setattr(hermes_cli.profiles, "list_profiles", lambda: [])
         assert launchd_gateway_labels_for_install() == []
 
@@ -212,6 +216,12 @@ class TestGetServicePidsScoping:
         }
         monkeypatch.setattr(
             gw, "_locate_launchd_gateway_service", lambda label: located[label]
+        )
+        # The all-profiles branch also guards against unenumerated labels with
+        # ``launchctl list``. Keep this test hermetic: it is asserting the
+        # label-derived fleet, not this Mac's real launchd inventory.
+        monkeypatch.setattr(
+            gw.subprocess, "run", lambda *args, **kwargs: _completed(stdout="")
         )
 
     def test_all_profiles_returns_every_gateway_service_pid(self, monkeypatch):
@@ -646,9 +656,10 @@ class TestIncompleteWarningMentionsLaunchctl:
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
         assert "Update incomplete" in out
-        assert "launchctl kickstart -k" in out
+        assert "launchctl bootstrap" in out
 
-    def test_systemd_units_keep_systemctl_hint(self, capsys):
+    def test_systemd_units_keep_systemctl_hint(self, monkeypatch, capsys):
+        monkeypatch.setattr(gw, "is_macos", lambda: False)
         _warn_incomplete_gateway_fleet_restart(["hermes-gateway-coder"])
         out = capsys.readouterr().out
         assert "systemctl" in out

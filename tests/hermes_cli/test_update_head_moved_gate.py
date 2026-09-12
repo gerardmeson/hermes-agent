@@ -18,6 +18,8 @@ import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
+pytestmark = pytest.mark.usefixtures("isolated_update_runtime")
+
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
@@ -126,6 +128,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
+    )
+    monkeypatch.setattr(
+        hermes_gateway, "get_launchd_plist_path", lambda: tmp_path / "no-gateway.plist"
     )
 
 

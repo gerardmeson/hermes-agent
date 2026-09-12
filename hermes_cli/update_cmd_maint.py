@@ -917,9 +917,9 @@ def _sync_profiles_after_update() -> None:
 def _refresh_cua_driver_after_update() -> None:
     """cua-driver refresh, no-op unless on PATH; tied to update for a predictable cadence
     without a per-launch GitHub API call."""
-    refresh_cua_driver = True
+    refresh_cua_driver = False
     with _best_effort('Could not read updates.refresh_cua_driver: %s'):
-        refresh_cua_driver = bool(_load_updates_cfg().get("refresh_cua_driver", True))
+        refresh_cua_driver = bool(_load_updates_cfg().get("refresh_cua_driver", False))
 
     if (
         refresh_cua_driver and sys.platform in ("darwin", "win32", "linux") and shutil.which("cua-driver")

@@ -1200,6 +1200,9 @@ def _finish_already_up_to_date(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
+    # A repair-only update must not bypass the same dependency gate used after a pull.
+    from hermes_cli.update_cmd_deps import _enforce_post_dependency_security_gate
+    _enforce_post_dependency_security_gate()
     _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
     # gate so a partial outcome can't strand the fleet on stale code.

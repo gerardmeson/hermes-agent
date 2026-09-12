@@ -37,9 +37,48 @@ class Advisory:
     remediation: tuple[str, ...]
     published: str = ""
     severity: str = "high"  # low / medium / high / critical
+    affected_before: tuple[tuple[str, str], ...] = ()
 
 
 ADVISORIES: tuple[Advisory, ...] = (
+    Advisory(
+        id="httpcore2-2026-09",
+        title="HTTPX2 transport — httpcore2 before 2.10.0 has a known TLS bypass",
+        summary=(
+            "httpcore2 before 2.10.0 can send secure WebSocket traffic without TLS "
+            "when routed through a SOCKS proxy. Hermes receives this package "
+            "through its MCP HTTP client stack."
+        ),
+        url="https://github.com/advisories/GHSA-7mj9-2mp8-4m2p",
+        compromised=(),
+        affected_before=(("httpcore2", "2.10.0"),),
+        remediation=(
+            "Update Hermes' httpx2 pins and uv.lock to httpx2/httpcore2 2.12.0 or later.",
+            "Run `hermes update` through the supported source-and-lock route; do not patch the live venv with pip.",
+            "Verify with `hermes security audit` and `hermes doctor` after the runtime restarts.",
+        ),
+        published="2026-09-08",
+        severity="high",
+    ),
+    Advisory(
+        id="httpx2-2026-09",
+        title="HTTPX2 client — httpx2 before 2.12.0 has known High-severity flaws",
+        summary=(
+            "httpx2 before 2.12.0 is affected by unbounded streaming "
+            "decompression. Earlier releases also have TLS and request-handling "
+            "advisories. Hermes imports this HTTP client for MCP."
+        ),
+        url="https://github.com/advisories/GHSA-8xx6-hgc6-gc2m",
+        compromised=(),
+        affected_before=(("httpx2", "2.12.0"),),
+        remediation=(
+            "Update Hermes' httpx2 pins and uv.lock to httpx2/httpcore2 2.12.0 or later.",
+            "Run `hermes update` through the supported source-and-lock route; do not patch the live venv with pip.",
+            "Verify with `hermes security audit` and `hermes doctor` after the runtime restarts.",
+        ),
+        published="2026-09-08",
+        severity="high",
+    ),
     Advisory(
         id="shai-hulud-2026-05",
         title="Mini Shai-Hulud worm — mistralai 2.4.6 compromised on PyPI",
@@ -98,12 +137,35 @@ def _installed_version(pkg_name: str) -> Optional[str]:
 
 
 def detect_compromised(advisories: Iterable[Advisory] = ADVISORIES) -> list[AdvisoryHit]:
-    """All hits: package installed AND version in the compromised set (or the set is empty)."""
-    return [
+    """Exact compromised releases and affected ranges; prereleases are not fixes."""
+    from packaging.version import InvalidVersion, Version
+
+    advisories = tuple(advisories)
+    hits = [
         AdvisoryHit(advisory, pkg_name, installed)
         for advisory in advisories
         for pkg_name, bad_versions in advisory.compromised
         if (installed := _installed_version(pkg_name)) is not None and (not bad_versions or installed in bad_versions)
+    ]
+    for advisory in advisories:
+        for package, fixed in advisory.affected_before:
+            installed = _installed_version(package)
+            if installed is None:
+                continue
+            try:
+                affected = Version(installed) < Version(fixed)
+            except InvalidVersion:
+                affected = True  # warn rather than silently approving malformed metadata
+            if affected:
+                hits.append(AdvisoryHit(advisory, package, installed))
+    return hits
+
+
+def update_blocking_hits() -> list[AdvisoryHit]:
+    """Unacknowledgeable High/Critical hits that make a post-sync update unsafe."""
+    return [
+        hit for hit in detect_compromised()
+        if hit.advisory.severity in {"high", "critical"}
     ]
 
 

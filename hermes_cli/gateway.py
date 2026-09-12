@@ -54,6 +54,7 @@ from hermes_cli.config import (
     save_env_value,
     write_platform_config_field,
 )
+from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
 
 # display_hermes_home is imported lazily: hermes_constants may be a cached pre-update version.
 from hermes_cli.setup import (
@@ -588,6 +589,13 @@ def _scan_gateway_pids(
                 profile_flag_value(command_lc) == current_profile_name_lc
                 or f"hermes_home={current_home_lc}" in command_lc
             )
+
+        # The default profile has no command-line suffix. Outside the canonical
+        # Hermes home tree, accepting every unscoped default gateway would let a
+        # rehearsal or side-by-side checkout drain the operator's live service.
+        # Its own process must therefore declare this exact temporary home.
+        if not _launchd_home_is_managed_by_this_install():
+            return f"hermes_home={current_home_lc}" in command_lc
 
         # Default profile: accept unless argv advertises another profile. HERMES_HOME may come via
         # env (invisible to wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
@@ -2563,10 +2571,37 @@ def get_launchd_plist_path() -> Path:
     return home / "Library" / "LaunchAgents" / f"{name}.plist"
 
 
+def _launchd_home_is_managed_by_this_install() -> bool:
+    """Whether this home can safely claim the shared per-user launchd labels.
+
+    ``ai.hermes.gateway*`` labels are account-global. A temporary ``HERMES_HOME``
+    is useful for tests and recovery rehearsals, but must never acquire restart
+    authority over the canonical install merely because it has a default profile.
+    Canonical root and its direct named profile children are the only homes whose
+    labels this checkout may manage.
+    """
+    try:
+        home = get_hermes_home().resolve()
+        root = _get_platform_default_hermes_home().resolve()
+    except OSError:
+        return False
+    if home == root:
+        return True
+    try:
+        relative = home.relative_to(root / "profiles")
+    except ValueError:
+        return False
+    return len(relative.parts) == 1 and bool(relative.parts[0])
+
+
 def launchd_gateway_labels_for_install() -> list[str]:
     """Launchd labels for every profile of THIS install (root first, then profiles by name). Derived from
     the profile layout, NOT by globbing ``~/Library/LaunchAgents``, so a sandboxed HERMES_HOME never
     restarts another install's fleet. Names that can't map to a suffix are skipped."""
+    if not _launchd_home_is_managed_by_this_install():
+        logger.debug("Refusing launchd fleet ownership for non-canonical HERMES_HOME")
+        return []
+
     import re as _re
     from hermes_cli.profiles import list_profiles
     root_label: list[str] = []

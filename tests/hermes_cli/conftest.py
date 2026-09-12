@@ -20,6 +20,22 @@ def all_assignees_spawnable(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_dependency_gate_for_mocked_update_flows(request, monkeypatch):
+    """Legacy update tests mock pip and subprocess, so have no target metadata.
+
+    Keep those unit tests about their own lifecycle branches. The dedicated
+    security integration module explicitly opts into the real child process,
+    metadata, failure receipts and caller/restart-order tests.
+    """
+    if not request.node.path.name.startswith("test_update"):
+        return
+    if getattr(request.module, "USE_REAL_DEPENDENCY_SECURITY_GATE", False):
+        return
+    from hermes_cli import update_cmd_deps
+    monkeypatch.setattr(update_cmd_deps, "_enforce_post_dependency_security_gate", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _suppress_concurrent_hermes_gate(request, monkeypatch):
     """Default ``_detect_concurrent_hermes_instances`` to ``[]`` for every test.
 

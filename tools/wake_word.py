@@ -111,6 +111,16 @@ def resolve_inference_framework(cfg: Dict[str, Any]) -> str:
     return framework
 
 
+def macos_openwakeword_tflite_deferred(cfg: Dict[str, Any]) -> bool:
+    """Whether this adoption deliberately excludes the unsupported Apple Silicon path.
+
+    This stays explicit rather than coercing to the known-deaf ONNX engine or
+    prompting a runtime install whose published Python contract excludes Hermes.
+    """
+    return (_is_macos_arm64() and _provider(cfg) == "openwakeword"
+            and resolve_inference_framework(cfg) == "tflite")
+
+
 def ensure_tflite_runtime() -> bool:
     """Make ``import tflite_runtime.interpreter`` resolve, returning success. openWakeWord hardcodes
     that import but only declares ``tflite-runtime`` on Linux; on macOS the wheel is ``ai-edge-litert``,
@@ -378,16 +388,21 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     # Loop is wake → record → STT → agent → TTS; without either end the mic hears you
     # and nothing perceptible happens — refuse with a hint.
     stt_ok, tts_ok = _stt_ready(), _tts_ready()
-    # tflite needs a runtime openWakeWord doesn't declare off Linux; report it as a
-    # remediation instead of arming a detector that can't fire.
-    tflite_ok = (feature != "wake.openwakeword" or resolve_inference_framework(cfg) != "tflite"
-                 or ensure_tflite_runtime() or lazy_deps.is_available("wake.openwakeword.tflite") or lazy_ok)
+    tflite_deferred = macos_openwakeword_tflite_deferred(cfg)
+    # tflite needs a runtime openWakeWord doesn't declare off Linux. On Apple
+    # Silicon this adoption deliberately defers that unsupported runtime rather
+    # than arming a detector that cannot fire or attempting a lazy install.
+    tflite_ok = (not tflite_deferred and (feature != "wake.openwakeword"
+                 or resolve_inference_framework(cfg) != "tflite"
+                 or ensure_tflite_runtime() or lazy_deps.is_available("wake.openwakeword.tflite") or lazy_ok))
     key_ok = provider != "porcupine" or bool((os.getenv("PORCUPINE_ACCESS_KEY") or "").strip())
     capture_mode = resolve_capture_mode(cfg)
     missing = " and ".join(n for n, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok)
 
     # Ordered remediation ladder: first true predicate wins.
     ladder = (
+        (tflite_deferred,
+         lambda: "openWakeWord/TFLite is deferred for this macOS adoption; choose a supported wake provider."),
         (not key_ok, lambda: "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."),
         (not deps_ok and not lazy_ok, lambda: lazy_deps.feature_install_command(feature) or ""),
         (not tflite_ok,

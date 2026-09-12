@@ -67,6 +67,18 @@ def patched_version(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, str]]
 
 
 class TestDetectCompromised:
+    @pytest.mark.parametrize("package,version,affected", [
+        ("httpcore2", "2.9.1", True),
+        ("httpcore2", "2.10.0", False),
+        ("httpx2", "2.11.0", True),
+        ("httpx2", "2.12.0", False),
+        ("httpx2", "2.12.0rc1", True),
+    ])
+    def test_http_advisory_boundaries(self, patched_version, package, version, affected):
+        patched_version[package] = version
+        hits = adv.detect_compromised()
+        assert bool(hits) is affected
+
     def test_no_match_returns_empty_list(self, fake_advisory, patched_version):
         # No matching package installed.
         hits = adv.detect_compromised(advisories=[fake_advisory])
@@ -223,6 +235,18 @@ class TestRendering:
 
 
 class TestRealCatalog:
+    def test_httpx2_2_7_chain_is_an_update_blocker(self, patched_version):
+        """A normal update must not restart a runtime with the known bad pair."""
+        patched_version["httpx2"] = "2.7.0"
+        patched_version["httpcore2"] = "2.7.0"
+
+        hits = adv.update_blocking_hits()
+
+        assert {(hit.package, hit.installed_version) for hit in hits} == {
+            ("httpx2", "2.7.0"),
+            ("httpcore2", "2.7.0"),
+        }
+
     def test_advisories_well_formed(self):
         """Every shipped advisory must be self-consistent.
 
@@ -239,7 +263,7 @@ class TestRealCatalog:
             assert advisory.remediation, f"{advisory.id}: empty remediation"
             assert advisory.url.startswith("http"), \
                 f"{advisory.id}: bad url {advisory.url!r}"
-            assert advisory.compromised, \
+            assert advisory.compromised or advisory.affected_before, \
                 f"{advisory.id}: empty compromised tuple"
             for pkg, versions in advisory.compromised:
                 assert pkg, f"{advisory.id}: empty package name"

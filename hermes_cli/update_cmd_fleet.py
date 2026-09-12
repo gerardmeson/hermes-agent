@@ -578,6 +578,9 @@ def _restart_macos_launchd_gateways(
         get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
+    labels = launchd_gateway_labels_for_install()
+    if not labels:
+        return
     if require_supervision:
         listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if listing.returncode != 0:
@@ -588,7 +591,7 @@ def _restart_macos_launchd_gateways(
     failed_or_stale_units.extend(_failed)
     current_label = get_launchd_label()
 
-    for label in launchd_gateway_labels_for_install():
+    for label in labels:
         if label == current_label:
             continue
         try:

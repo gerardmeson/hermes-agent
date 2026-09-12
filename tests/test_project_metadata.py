@@ -1,5 +1,6 @@
 """Regression tests for packaging metadata in pyproject.toml."""
 
+import json
 from pathlib import Path
 import tomllib
 
@@ -15,6 +16,24 @@ def _load_package_data():
     with pyproject_path.open("rb") as handle:
         tool = tomllib.load(handle)["tool"]
     return tool["setuptools"]["package-data"]
+
+
+def _load_root_node_metadata():
+    root = Path(__file__).resolve().parents[1]
+    with (root / "package.json").open() as handle:
+        manifest = json.load(handle)
+    with (root / "package-lock.json").open() as handle:
+        lock = json.load(handle)
+    return manifest, lock
+
+
+def test_root_node_security_overrides_are_resolved_in_lockfile():
+    manifest, lock = _load_root_node_metadata()
+
+    assert manifest["overrides"]["colord"] == "2.9.4"
+    assert manifest["overrides"]["sanitize-html"] == "2.17.7"
+    assert lock["packages"]["node_modules/colord"]["version"] == "2.9.4"
+    assert lock["packages"]["node_modules/sanitize-html"]["version"] == "2.17.7"
 
 
 def test_matrix_extra_not_in_all():
@@ -191,6 +210,28 @@ def _uv_lock_versions(package: str) -> set[str]:
             lock,
         )
     }
+
+
+def test_mcp_http_stack_pins_clear_known_advisories():
+    optional_dependencies = _load_optional_dependencies()
+
+    for extra in ("dev", "mcp", "computer-use"):
+        pin = _exact_pins(optional_dependencies[extra]).get("httpx2")
+        assert pin == "2.12.0", f"[{extra}] must pin httpx2==2.12.0, found {pin!r}"
+
+    assert _uv_lock_version("httpx2") == "2.12.0"
+    assert _uv_lock_version("httpcore2") == "2.12.0"
+
+
+def test_sherpa_wake_contract_includes_its_required_core_runtime():
+    """sherpa-onnx declares its core wheel exactly; omit it and updates make
+    wake imports fail despite a successful lock resolution."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+    assert "sherpa-onnx-core==1.13.4" in optional_dependencies["wake"]
+    assert "sherpa-onnx-core==1.13.4" in LAZY_DEPS["wake.sherpa"]
+    assert _uv_lock_version("sherpa-onnx-core") == "1.13.4"
 
 
 def test_every_lazy_deps_exact_pin_matches_uv_lock():

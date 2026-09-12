@@ -9,6 +9,8 @@ from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 from hermes_cli import update_cmd
 
+pytestmark = pytest.mark.usefixtures("isolated_update_runtime")
+
 
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
@@ -42,7 +44,7 @@ def _patch_managed_uv(request):
 
 
 @pytest.fixture(autouse=True)
-def _patch_gateway_discovery():
+def _patch_gateway_discovery(tmp_path):
     """Keep cmd_update's gateway auto-restart phase off this machine's gateways.
 
     Tests in this file that reach the full success path (e.g. the #87694
@@ -61,6 +63,7 @@ def _patch_gateway_discovery():
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
          patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]), \
+         patch("hermes_cli.gateway.get_launchd_plist_path", return_value=tmp_path / "no-gateway.plist"), \
          patch("hermes_cli.update_inventory.collect_runtime_inventory", return_value=None), \
          patch("hermes_cli.update_inventory.report_unaccounted_runtimes", return_value=False), \
          patch.object(hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **kw: False), \

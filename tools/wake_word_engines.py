@@ -94,9 +94,13 @@ class _OpenWakeWordEngine(_Engine):
     @staticmethod
     def _usable_framework(framework: str) -> str:
         """Refuse openWakeWord's silent tflite→onnx downgrade: without a tflite runtime it falls back
-        to onnx, which on macOS ARM64 never fires (armed but deaf). Install + bridge the runtime first
-        (gate lives here because dep specs can't carry PEP 508 markers); on that Mac raise instead."""
+        to onnx, which on macOS ARM64 never fires (armed but deaf). The Apple Silicon TFLite route
+        is deliberately deferred for this adoption, so never attempt its unsupported lazy install."""
         ww = _ww()
+        if framework == "tflite" and ww._is_macos_arm64():
+            raise RuntimeError(
+                "openWakeWord/TFLite is deferred for this macOS adoption; choose a supported wake provider."
+            )
         if framework != "tflite" or ww.ensure_tflite_runtime():
             return framework
         try:

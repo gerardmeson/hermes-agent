@@ -75,12 +75,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "stt.silk": ("pilk==0.2.4",),
 
     # ─── Wake word ("Hey Hermes") engines (sync with the `wake` extra) ──────
-    # openWakeWord's ONNX model scores ~0 on macOS ARM64, so macOS uses the tflite backend
-    # (ai-edge-litert, bridged in tools/wake_word.py). Separate feature because specs cannot
-    # carry PEP 508 markers (";" is rejected) — the caller applies the platform gate.
-    "wake.openwakeword.tflite": (
-        "ai-edge-litert==2.1.6",
-    ),
+    # The macOS ARM openWakeWord/TFLite bridge is deliberately deferred for
+    # this adoption: its upstream Python dependency excludes the Hermes 3.11
+    # runtime. Do not add it here as a lazy fallback; wake_word reports the
+    # engine unavailable rather than installing an unsupported package.
     "wake.openwakeword": (
         "openwakeword==0.6.0",
         "onnxruntime==1.27.0",
@@ -91,6 +89,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # sherpa_onnx.text2token but undeclared by sherpa-onnx.
     "wake.sherpa": (
         "sherpa-onnx==1.13.4",
+        "sherpa-onnx-core==1.13.4",
         "sentencepiece==0.2.2",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
@@ -187,7 +186,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # MCP client SDK for the cua-driver, so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==2.0.0",
-        "httpx2==2.7.0",  # mcp 2.x HTTP stack — sync with pyproject [computer-use]
+        "httpx2==2.12.0",  # mcp 2.x HTTP stack — sync with pyproject [computer-use] and uv.lock
         "starlette==1.3.1",
     ),
     # huggingface-hub is SHARED with transformers (>=1.5.0,<2 via Hindsight) and marked active

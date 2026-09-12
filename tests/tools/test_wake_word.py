@@ -96,6 +96,7 @@ def _voice_loop_ready(monkeypatch, stt=True, tts=True):
     test venv's installed voice stack."""
     monkeypatch.setattr(ww, "_stt_ready", lambda: stt)
     monkeypatch.setattr(ww, "_tts_ready", lambda: tts)
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
 
 
 def test_requirements_openwakeword_available(monkeypatch):
@@ -182,6 +183,40 @@ def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
     assert "audio device" in r["hint"] or "microphone" in r["hint"].lower()
 
 
+def test_macos_openwakeword_tflite_is_explicitly_deferred_without_lazy_install(monkeypatch):
+    _voice_loop_ready(monkeypatch)
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: True)
+    monkeypatch.setattr(ww, "_audio_available", lambda: True)
+    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        "tools.lazy_deps.is_available",
+        lambda feature: calls.append(feature) or feature == "wake.openwakeword",
+    )
+    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+
+    result = ww.check_wake_word_requirements({"provider": "openwakeword"})
+
+    assert result["available"] is False
+    assert "deferred" in result["hint"].lower()
+    assert "ai-edge-litert" not in result["hint"]
+    assert calls == ["wake.openwakeword"]
+
+
+def test_macos_openwakeword_tflite_engine_never_attempts_lazy_install_when_deferred(monkeypatch):
+    from tools import wake_word_engines
+
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: True)
+    monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: False)
+    calls = []
+    monkeypatch.setattr(wake_word_engines, "_ensure_dep", lambda feature: calls.append(feature))
+
+    with pytest.raises(RuntimeError, match="deferred"):
+        wake_word_engines._OpenWakeWordEngine._usable_framework("tflite")
+
+    assert calls == []
+
+
 # ── openWakeWord engine (bundled model + base-model fetch) ───────────────
 
 
@@ -213,6 +248,7 @@ def _install_fake_openwakeword(monkeypatch):
     monkeypatch.setitem(sys.modules, "openwakeword", oww)
     monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
     monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     return calls
 
 
@@ -719,6 +755,7 @@ def test_resolve_capture_mode_auto_and_prefer_client(monkeypatch):
 
 
 def test_requirements_client_capture_without_local_mic(monkeypatch):
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     monkeypatch.setattr(ww, "_audio_available", lambda: False)
     monkeypatch.setattr(ww, "_local_input_device_ready", lambda: False)
     monkeypatch.setattr(ww, "_stt_ready", lambda: True)
