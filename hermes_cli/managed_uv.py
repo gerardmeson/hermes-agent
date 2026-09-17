@@ -304,7 +304,10 @@ def update_managed_uv(
     if not existing:
         # Not installed yet — ensure_uv() will handle that elsewhere.
         return None
-    if force or not _uv_self_update_is_fresh():
+    # A scoped qualified update may retain its already-admitted installer.
+    # This never suppresses the vulnerable-runtime repair probe below.
+    preserve_installer = os.environ.get("HERMES_UPDATE_SKIP_UV_SELF_UPDATE") == "1"
+    if not preserve_installer and (force or not _uv_self_update_is_fresh()):
         try:
             result = subprocess.run(
                 [existing, "self", "update"], capture_output=True,
