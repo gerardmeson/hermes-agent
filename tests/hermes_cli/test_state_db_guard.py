@@ -143,6 +143,53 @@ class TestPreUpdateBackupIntegrityGuard:
         assert "integrity check FAILED" in out
         assert "Snapshot copy is valid" in out
 
+    def test_database_mode_removes_size_cap_for_all_profiles(self, hermes_home, monkeypatch):
+        """The one-click security mode must include oversized SQLite state without archiving secrets."""
+        from argparse import Namespace
+
+        import hermes_cli.backup as backup_mod
+        import hermes_cli.update_cmd_maint as maint
+
+        seen = {}
+        real_root = backup_mod.create_quick_snapshot
+        real_siblings = backup_mod.create_pre_update_snapshots_all_profiles
+
+        def capture_root(**kwargs):
+            seen["root"] = kwargs.get("max_file_size")
+            return real_root(**kwargs)
+
+        def capture_siblings(**kwargs):
+            seen["siblings"] = kwargs.get("max_file_size")
+            return real_siblings(**kwargs)
+
+        monkeypatch.setattr(maint, "_load_updates_cfg", lambda: {"pre_update_backup": "database"})
+        monkeypatch.setattr(backup_mod, "create_quick_snapshot", capture_root)
+        monkeypatch.setattr(backup_mod, "create_pre_update_snapshots_all_profiles", capture_siblings)
+
+        snap_id = maint._run_pre_update_backup(Namespace(no_backup=False, backup=False))
+
+        assert snap_id is not None
+        assert seen == {"root": None, "siblings": None}
+
+    def test_database_mode_stops_when_a_profile_snapshot_is_missing(
+        self, hermes_home, monkeypatch
+    ):
+        """Required database recovery fails closed before the updater changes code or services."""
+        from argparse import Namespace
+
+        import hermes_cli.backup as backup_mod
+        import hermes_cli.update_cmd_maint as maint
+
+        monkeypatch.setattr(maint, "_load_updates_cfg", lambda: {"pre_update_backup": "database"})
+        monkeypatch.setattr(
+            backup_mod, "_sibling_profile_homes", lambda _home: [("work", hermes_home / "profiles/work")])
+        monkeypatch.setattr(backup_mod, "create_pre_update_snapshots_all_profiles", lambda **_kwargs: {})
+
+        with pytest.raises(SystemExit) as exc:
+            maint._run_pre_update_backup(Namespace(no_backup=False, backup=False))
+
+        assert exc.value.code == 1
+
     def test_failed_snapshot_is_loud_and_update_continues(self, hermes_home, capsys, monkeypatch):
         """Best-effort by design, but never silent: a snapshot helper that raises (or captures
         nothing) prints a stdout warning and returns None so the receipt records a failed step."""

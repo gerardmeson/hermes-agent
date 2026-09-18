@@ -624,6 +624,7 @@ def _ensure_acp_launcher() -> None:
 _BACKUP_MODE_ALIASES = {
     "off": "off", "false": "off", "none": "off", "disabled": "off",
     "full": "full", "zip": "full", "true": "full",
+    "database": "database", "db": "database",
     "quick": "quick",
 }
 
@@ -679,12 +680,15 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     print()
 
 
-def _run_quick_snapshots() -> Optional[str]:
+def _run_quick_snapshots(
+    max_file_size: Optional[int] = _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, *, require_all: bool = False
+) -> Optional[str]:
     """Quick snapshot of the root home plus every sibling profile; returns the root snapshot id."""
     from hermes_cli.update_cmd import _record_update_step
     from hermes_cli.backup import create_quick_snapshot
+    from hermes_constants import get_hermes_home
     snapshot_id = create_quick_snapshot(
-        label="pre-update", keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+        label="pre-update", keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=max_file_size,
     )
     if snapshot_id:
         _verify_state_db_after_snapshot(snapshot_id)
@@ -692,11 +696,15 @@ def _run_quick_snapshots() -> Optional[str]:
 
     # The code swap + fleet restart touch EVERY profile, so each gets the same snapshot
     # under its own state-snapshots/. Best-effort per profile.
+    _missing_profiles: list[str] = []
     with _best_effort('Sibling profile snapshots failed: %s'):
-        from hermes_cli.backup import create_pre_update_snapshots_all_profiles
+        from hermes_cli.backup import create_pre_update_snapshots_all_profiles, _sibling_profile_homes
         _sibling_snaps = create_pre_update_snapshots_all_profiles(
-            keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=max_file_size,
         )
+        if require_all:
+            _expected = {name for name, _ in _sibling_profile_homes(get_hermes_home())}
+            _missing_profiles = sorted(_expected - set(_sibling_snaps))
         if _sibling_snaps:
             print(f"◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
             _record_update_step(
@@ -707,6 +715,8 @@ def _run_quick_snapshots() -> Optional[str]:
             import hermes_cli.update_cmd_config as _cfg
             # The reader lives in update_cmd_config; write ITS module global, not ours.
             _cfg._LAST_SIBLING_SNAPSHOTS = _sibling_snaps
+    if _missing_profiles:
+        raise RuntimeError("database snapshot missing profile(s): " + ", ".join(_missing_profiles))
     return snapshot_id
 
 
@@ -764,6 +774,8 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
     ``off`` — nothing. ``quick`` (default) — snapshot of critical small files under
     ``state-snapshots/``, files over 1 GiB skipped so a bloated state.db can't stall the update.
+    ``database`` — the same credential-excluding snapshot set, but without the size cap so every
+    profile's SQLite state is captured through the WAL-safe ``sqlite3.backup()`` path.
     ``full`` — quick snapshot PLUS a zip of HERMES_HOME under ``backups/`` (``hermes import``).
 
     Explicit user opt-out is honored fully. See #34600.
@@ -779,7 +791,9 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
     snapshot_id = None
     try:
-        snapshot_id = _run_quick_snapshots()
+        snapshot_id = _run_quick_snapshots(
+            max_file_size=None if mode == "database" else _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            require_all=mode == "database")
     except Exception as exc:
         logger.warning("Pre-update snapshot failed: %s", exc)
         snapshot_detail = f" ({exc})"
@@ -793,6 +807,9 @@ def _run_pre_update_backup(args) -> Optional[str]:
         print(f"  ⚠ Pre-update snapshot FAILED — no recovery point was saved{snapshot_detail}.")
         print("  Continuing with update (set updates.pre_update_backup: off to silence this).")
         print()
+        if mode == "database":
+            print("✗ Database recovery is required; update stopped before changing code or services.")
+            raise SystemExit(1)
 
     if mode != "full":
         if snapshot_id:
