@@ -151,6 +151,73 @@ def test_unconfigured_user_agent_leaves_the_default_header(
     assert refresh.headers.get("User-Agent") == default_ua
 
 
+def test_metadata_discovery_requests_carry_the_configured_user_agent(tmp_path, monkeypatch):
+    """OAuth metadata discovery uses the configured client identity; regular MCP
+    traffic is deliberately left alone."""
+    import httpx
+
+    provider = _build_provider_via(
+        build_oauth_auth, monkeypatch, tmp_path, {"user_agent": "Hermes Agent"}
+    )
+    discovery = httpx.Request(
+        "GET", "https://www.tradingview.com/.well-known/oauth-authorization-server"
+    )
+    ordinary_mcp = httpx.Request("POST", "https://mcp.tradingview.com/mcp")
+
+    provider._prepare_oauth_metadata_request(discovery)
+    provider._prepare_oauth_metadata_request(ordinary_mcp)
+
+    assert discovery.headers["User-Agent"] == "Hermes Agent"
+    assert ordinary_mcp.headers.get("User-Agent") != "Hermes Agent"
+
+
+def test_configured_scope_overrides_server_metadata_scope(tmp_path, monkeypatch):
+    """A configured least-privilege scope overrides broad server metadata."""
+    import httpx
+
+    provider = _build_provider_via(
+        build_oauth_auth, monkeypatch, tmp_path, {"scope": "mcp:read"}
+    )
+    assert provider._hermes_configured_scope == "mcp:read"
+    request = httpx.Request(
+        "GET", "https://mcp.example.com/.well-known/oauth-protected-resource/mcp"
+    )
+    response = httpx.Response(
+        200,
+        json={
+            "resource": "https://mcp.example.com/mcp",
+            "authorization_servers": ["https://idp.example.com"],
+            "scopes_supported": ["mcp:read", "mcp:tools"],
+        },
+        request=request,
+    )
+
+    constrained = provider._apply_configured_scope_to_prm_response(request, response)
+
+    assert constrained.json()["scopes_supported"] == ["mcp:read"]
+
+
+def test_configured_scope_overrides_auth_challenge_scope(tmp_path, monkeypatch):
+    """A configured scope also replaces a server challenge's broader scope."""
+    import httpx
+
+    provider = _build_provider_via(
+        build_oauth_auth, monkeypatch, tmp_path, {"scope": "mcp:read"}
+    )
+    request = httpx.Request("POST", "https://mcp.example.com/mcp")
+    response = httpx.Response(
+        401,
+        headers={"WWW-Authenticate": 'Bearer resource_metadata="https://mcp.example.com/meta", scope="mcp:tools"'},
+        stream=httpx.ByteStream(b""),
+        request=request,
+    )
+
+    constrained = provider._apply_configured_scope_to_auth_challenge(request, response)
+
+    assert 'scope="mcp:read"' in constrained.headers["WWW-Authenticate"]
+    assert "mcp:tools" not in constrained.headers["WWW-Authenticate"]
+
+
 def test_user_agent_does_not_disturb_token_auth_preparation(tmp_path, monkeypatch):
     """The stamp runs after prepare_token_auth — a confidential client's
     Authorization header must survive alongside the custom User-Agent."""

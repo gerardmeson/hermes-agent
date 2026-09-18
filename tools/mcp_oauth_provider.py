@@ -37,12 +37,22 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(
+        self,
+        *args: Any,
+        token_user_agent: str | None = None,
+        oauth_flow: str = "browser",
+        configured_scope: str | None = None,
+        **kwargs: Any,
+    ):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
-        # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
-        # reject httpx's default (#75576).
+        # oauth.user_agent — stamped onto OAuth metadata and token-endpoint requests; some
+        # authorization servers/WAFs reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        self._hermes_configured_scope = (
+            configured_scope.strip() if isinstance(configured_scope, str) and configured_scope.strip() else None
+        )
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -75,6 +85,74 @@ class HermesProviderMixin:
             return result
 
         self.context.callback_handler = _fill_iss
+
+    def _prepare_oauth_metadata_request(self, request):
+        """Stamp the configured identity on OAuth metadata discovery only.
+
+        Some authorization servers reject the SDK client's anonymous metadata
+        requests, even though they accept the same request with a normal client
+        identity. Keep the header off MCP requests and browser redirects.
+        """
+        ua = getattr(self, "_hermes_token_user_agent", None)
+        url = str(getattr(request, "url", ""))
+        if ua and "/.well-known/" in url:
+            request.headers["User-Agent"] = ua
+        return request
+
+    def _apply_configured_scope_to_auth_challenge(self, request, response):
+        """Make a configured scope win over a broader HTTP auth challenge."""
+        scope = getattr(self, "_hermes_configured_scope", None)
+        if not scope or getattr(response, "status_code", None) != 401:
+            return response
+        challenge = response.headers.get("WWW-Authenticate")
+        if not challenge:
+            return response
+        import re
+
+        replacement = f'scope="{scope}"'
+        if re.search(r'\bscope="[^"]*"', challenge):
+            challenge = re.sub(r'\bscope="[^"]*"', replacement, challenge)
+        else:
+            challenge = f"{challenge}, {replacement}"
+        import httpx
+
+        headers = {key: value for key, value in response.headers.items() if key.lower() != "www-authenticate"}
+        headers["WWW-Authenticate"] = challenge
+        return httpx.Response(
+            response.status_code,
+            headers=headers,
+            content=b"",
+            request=response.request,
+        )
+
+    def _apply_configured_scope_to_prm_response(self, request, response):
+        """Prefer an explicit operator scope to broad provider metadata.
+
+        The SDK treats a server's advertised scope set as a fallback request. An
+        explicit `oauth.scope` is a tighter operator boundary, so place it in
+        protected-resource metadata where the SDK's normal precedence rule uses it.
+        """
+        scope = getattr(self, "_hermes_configured_scope", None)
+        url = str(getattr(request, "url", ""))
+        if not scope or "/.well-known/oauth-protected-resource" not in url:
+            return response
+        try:
+            payload = response.json()
+        except Exception:
+            return response
+        if not isinstance(payload, dict):
+            return response
+        payload["scopes_supported"] = scope.split()
+        import httpx
+
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        return httpx.Response(
+            response.status_code,
+            headers=headers,
+            json=payload,
+            request=response.request,
+        )
 
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""
@@ -139,8 +217,14 @@ class HermesProviderMixin:
                     # asend(response), so `async for` would swallow the response and
                     # feed the inner generator None. Async generators have no
                     # `yield from`, hence the manual pump.
+                    # The SDK yields MCP traffic, OAuth metadata discovery and token requests
+                    # through the same generator. Only discovery URLs receive this optional
+                    # client identity; ordinary MCP traffic keeps its original headers.
+                    out = self._prepare_oauth_metadata_request(out)
                     try:
                         sent = yield out
+                        sent = self._apply_configured_scope_to_auth_challenge(out, sent)
+                        sent = self._apply_configured_scope_to_prm_response(out, sent)
                     except GeneratorExit:
                         await inner.aclose()
                         raise
@@ -448,5 +532,6 @@ def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy
         # `oauth.timeout` bounds the callback waiter's poll loop instead.
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
+        "configured_scope": cfg.get("scope"),
         "oauth_flow": cfg.get("flow", "browser"),
         **mo.cimd_provider_kwargs(cfg)}
