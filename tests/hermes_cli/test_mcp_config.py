@@ -792,7 +792,7 @@ class TestMcpLogin:
         })
         token_dir = tmp_path / "mcp-tokens"
 
-        # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
+        # cmd_mcp_login clears the active token before probing, then the real OAuth flow
         # writes a fresh token during the probe. Simulate that: the mocked
         # probe drops a token file, mirroring a successful authorization.
         seen = {}
@@ -817,6 +817,54 @@ class TestMcpLogin:
         # The login path must grant a human enough time to finish the browser
         # OAuth round-trip — far longer than the 30s probe default.
         assert seen["connect_timeout"] >= 180
+
+    def test_login_failure_restores_existing_oauth_state(self, tmp_path, capsys, monkeypatch):
+        """A failed browser re-auth must not discard a previously working refresh token."""
+        _seed_config(tmp_path, {
+            "realserver": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        old_token = '{"access_token":"old","refresh_token":"old-refresh","expires_in":3600}'
+        token_path = token_dir / "realserver.json"
+        token_path.write_text(old_token, encoding="utf-8")
+
+        from tools.mcp_oauth_manager import reset_manager_for_tests
+        reset_manager_for_tests()
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("browser flow cancelled")),
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="realserver"))
+
+        assert token_path.read_text(encoding="utf-8") == old_token
+        assert "Authentication failed" in capsys.readouterr().out
+
+    def test_login_false_success_restores_existing_oauth_state(self, tmp_path, capsys, monkeypatch):
+        """A tools/list response without a new token also retains the previous OAuth state."""
+        _seed_config(tmp_path, {
+            "realserver": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        old_token = '{"access_token":"old","refresh_token":"old-refresh","expires_in":3600}'
+        token_path = token_dir / "realserver.json"
+        token_path.write_text(old_token, encoding="utf-8")
+
+        from tools.mcp_oauth_manager import reset_manager_for_tests
+        reset_manager_for_tests()
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda *args, **kwargs: [("read", "read-only")],
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="realserver"))
+
+        assert token_path.read_text(encoding="utf-8") == old_token
+        assert "no OAuth token was obtained" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

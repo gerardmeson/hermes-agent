@@ -825,8 +825,19 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     if selected_flow not in {"browser", "device"}:
         _error("oauth.flow must be browser or device")
         return False
+
+    # Browser re-authentication must start without the cached token, but a cancelled
+    # or failed replacement must never turn a working connection into a logout. Keep
+    # the complete per-server state and restore it only when the new flow left no token.
+    # The Desktop path has the same rollback guard in tui_gateway.mcp_oauth_sessions.
+    storage = None
+    previous_state: dict[str, bytes] = {}
     try:
+        from tools.mcp_oauth import HermesTokenStorage
         from tools.mcp_oauth_manager import get_manager
+
+        storage = HermesTokenStorage(name)
+        previous_state = storage.snapshot()
         if selected_flow == "browser":
             get_manager().remove(name)
     except Exception as exc:
@@ -859,6 +870,8 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for
         # providers without RFC 7591) while the probe still lists tools. Verify a token landed.
         if not _oauth_tokens_present(name):
+            if storage is not None:
+                storage.restore(previous_state, only_if_absent=True)
             _warning("Server responded, but no OAuth token was obtained — authentication did not complete.")
             print()
             _info(
@@ -882,6 +895,8 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             _success("Authenticated (server reported no tools)")
         return True
     except Exception as exc:
+        if storage is not None:
+            storage.restore(previous_state, only_if_absent=True)
         try:
             from tools.mcp_oauth import humanize_oauth_registration_error
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
