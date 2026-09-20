@@ -18,6 +18,7 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
+  type MenuItemConstructorOptions,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -7025,7 +7026,7 @@ async function showPluginCompatNoticeOnce() {
     })
 
     if (response === 0) {
-      handleDeepLink(`${HERMES_PROTOCOL}://open/skills?tab=plugins`)
+      handleDeepLink(`${HERMES_PROTOCOL}://open/capabilities?tab=plugins`)
     }
   } finally {
     try {
@@ -7085,7 +7086,7 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
 }
 
 function buildApplicationMenu() {
-  const template = []
+  const template: MenuItemConstructorOptions[] = []
 
   const checkForUpdatesItem = {
     label: 'Check for Updates…',
@@ -7152,7 +7153,16 @@ function buildApplicationMenu() {
       // terminal, preview, and other editable surfaces that need the strip.
       { role: 'pasteAndMatchStyle' },
       { role: 'delete' },
-      { role: 'selectAll' }
+      { role: 'selectAll' },
+      ...(IS_MAC
+        ? ([
+            { type: 'separator' },
+            {
+              label: 'Substitutions',
+              submenu: [{ role: 'showSubstitutions' }, { type: 'separator' }, { role: 'toggleTextReplacement' }]
+            }
+          ] satisfies MenuItemConstructorOptions[])
+        : [])
     ]
   })
   template.push({
@@ -13623,10 +13633,11 @@ const instanceWindows = new Set<any>()
 // when there's no live source window (e.g. all windows closed on macOS). The
 // pure cascade math lives in session-windows.ts (instanceWindowBounds).
 function nextInstanceBounds(source: BrowserWindow | null = BrowserWindow.getFocusedWindow() || mainWindow) {
-  const fallback = computeWindowOptions(readWindowState(), screen.getAllDisplays())
+  const displays = screen.getAllDisplays()
+  const fallback = computeWindowOptions(readWindowState(), displays)
   const base = source && !source.isDestroyed() ? source.getBounds() : null
 
-  return instanceWindowBounds(base, fallback)
+  return instanceWindowBounds(base, fallback, displays)
 }
 
 // Open a new full-chrome instance window. Mirrors createWindow()'s window
