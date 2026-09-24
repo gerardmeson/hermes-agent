@@ -365,7 +365,51 @@ describe('empty message.complete after streamed text (#95514)', () => {
   })
 })
 
-describe('message.complete sidebar refresh coalescing', () => {
+describe('sidebar refresh coalescing', () => {
+  it('refreshes during a live turn when a terminal tool renames a Hermes session', async () => {
+    mountStream()
+    vi.useFakeTimers()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          name: 'terminal',
+          result: "Session '20260923_202746_b41c2f' renamed to: 🧿🎛️ v1.19",
+          tool_id: 'rename-session'
+        },
+        session_id: ACTIVE_SID,
+        type: 'tool.complete'
+      })
+    )
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes when the Briefing receipt assigns a session title directly', async () => {
+    mountStream()
+    vi.useFakeTimers()
+
+    act(() =>
+      stream.handleEvent({
+        payload: { name: 'gearvis_briefing_ready', result: '{}', tool_id: 'briefing-ready' },
+        session_id: ACTIVE_SID,
+        type: 'tool.complete'
+      })
+    )
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
   it('collapses near-simultaneous completions into one refresh', async () => {
     mountStream()
     vi.useFakeTimers()

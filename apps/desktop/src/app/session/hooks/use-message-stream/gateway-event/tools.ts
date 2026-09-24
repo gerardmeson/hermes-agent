@@ -17,7 +17,15 @@ import type { GatewayEventContext } from './types'
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
-  const { flushQueuedDeltas, nativeSubagentSessionsRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+
+  const {
+    flushQueuedDeltas,
+    nativeSubagentSessionsRef,
+    scheduleSessionsRefresh,
+    sessionInterrupted,
+    updateSessionState,
+    upsertToolCall
+  } = deps
 
   if (event.type === 'todo.updated') {
     if (sessionId && !sessionInterrupted(sessionId)) {
@@ -95,6 +103,21 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
         void refreshBackgroundProcesses(sessionId)
       }
+    }
+
+    // Session titles can change inside a still-running turn. Briefing uses the
+    // Hermes CLI to assign its canonical emoji/version title, which persists
+    // server-side but emits no live title event; without this narrow refresh
+    // the sidebar stays stale until message.complete. The Briefing receipt can
+    // also assign a title directly when no session code was supplied.
+    const terminalResult = typeof payload?.result === 'string' ? payload.result : ''
+
+    const renamedSession =
+      payload?.name === 'gearvis_briefing_ready' ||
+      (payload?.name === 'terminal' && /Session '[^'\n]+' renamed to:/.test(terminalResult))
+
+    if (renamedSession) {
+      scheduleSessionsRefresh()
     }
 
     // The agent just created/deleted/renamed a skill, which adds or removes
