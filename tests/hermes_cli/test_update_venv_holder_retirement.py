@@ -107,6 +107,8 @@ def test_command_reaches_checkout_preparation_without_holder_gates(monkeypatch, 
     monkeypatch.setattr(update_cmd, "_prepare_git_command", prepare_checkout)
     with pytest.raises(ReachedCheckout):
         main.cmd_update(SimpleNamespace(gateway=False, check=False, yes=True, force=False, force_venv=False))
-    assert reached == ["backup", "pause", "checkout"]
+    # Git/update-target preparation now precedes snapshots and gateway pauses,
+    # so an impossible source route can stop without touching live state.
+    assert reached == ["checkout"]
     forbidden.assert_not_called()
 

@@ -837,6 +837,15 @@ if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   # Retry once: update-boundary class (fresh code on disk, stale in memory).
   # Exit 2 ("close all Hermes windows") is not retryable.
   #
+  # A source-merge conflict is deterministic until a maintainer reconciles the
+  # branch. Retrying only repeats the same refusal and hid its cause behind a
+  # generic failure screen. Stop with the real no-side-effect boundary instead.
+  if printf '%s' "$OUT" | grep -q "Source merge conflict — update stopped before any side effects"; then
+    log "source merge preflight conflicted; not retrying"
+    FINAL_CODE=1
+    FINAL_MSG="Source merge conflict. No snapshot was taken and Hermes was not changed. Open the update receipt; this update needs one controlled reconciliation."
+    exit 1
+  fi
   # A parked-branch SKIP (checkout on a feature branch with unmerged
   # commits) is also deterministic — the retry would hit the exact same
   # branch state and skip again, so it only wastes time. Detect the skip

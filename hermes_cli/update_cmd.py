@@ -250,6 +250,52 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         return result
 
 
+def _needs_in_place_merge_preflight(git_cmd, branch: str, current_branch: str, *, switch_branch: bool) -> bool:
+    """Whether the configured update route will merge ``origin/<branch>`` into a custom branch.
+
+    This duplicates only the read-only decision part of the parked-branch guard.
+    The mutating checkout/stash phase still owns the final decision after the
+    preflight has made a conflict harmless.
+    """
+    if current_branch in {branch, "HEAD"} or switch_branch:
+        return False
+    switch_safe, reason = _m()._assess_parked_branch_switch(
+        git_cmd, _m().PROJECT_ROOT, current_branch, branch
+    )
+    if not switch_safe or not reason.startswith("unmerged:"):
+        return False
+    with _best_effort("Could not read updates.parked_branch_strategy: %s"):
+        return _updates_config().get("parked_branch_strategy", "switch") == "update_in_place"
+    return False
+
+
+def _preflight_in_place_merge(git_cmd, target_ref: str) -> None:
+    """Prove a maintained custom branch can merge the fetched target before side effects.
+
+    ``git merge-tree --write-tree`` computes the real three-way merge without
+    touching the checkout, index, snapshots, Desktop process or gateways. A
+    non-zero result is not an update failure after mutation; it is an explicit
+    refusal before the update begins.
+    """
+    result = _git_run(git_cmd, ["merge-tree", "--write-tree", "HEAD", target_ref])
+    if result.returncode == 0:
+        _record_update_step("source_merge_preflight", True, f"clean: {target_ref}")
+        return
+
+    import re
+
+    report = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+    paths = re.findall(r"Merge conflict in ([^\n]+)", report)
+    detail = f"conflict: {', '.join(paths)}" if paths else "conflict: merge-tree could not produce a clean merge"
+    _record_update_step("source_merge_preflight", False, detail)
+    print("✗ Source merge conflict — update stopped before any side effects.")
+    print("  No snapshot was taken. Hermes source, Desktop, gateways and configuration were not changed.")
+    if paths:
+        print(f"  Conflicting path(s): {', '.join(paths)}")
+    print("  Open the update receipt for the exact recovery record, then reconcile the maintained branch.")
+    sys.exit(1)
+
+
 def _capture_head_sha(git_cmd, cwd) -> str | None:
     """Return the current HEAD SHA, or None if it can't be resolved."""
     try:
@@ -654,6 +700,32 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
         print(f"☤ Update available (behind {compare_branch}).")
     from hermes_cli.config import recommended_update_command
     print(f"  Run '{recommended_update_command()}' to install.")
+
+
+def _begin_mutating_update(args):
+    """Take the recovery snapshot and pause Windows gateways only after admission."""
+    snapshot_id = _m()._run_pre_update_backup(args)
+    _record_pre_update_backup_outcome(args, snapshot_id)
+    windows_resume = _m()._pause_windows_gateways_for_update()
+    if windows_resume:
+        import atexit as _atexit
+        _atexit.register(_m()._resume_windows_gateways_after_update, windows_resume)
+    return snapshot_id, windows_resume
+
+
+def _refresh_completion_request_for_mutation(request: dict, opts, plan, snapshot_id, windows_resume,
+                                              desktop, gateway_mode) -> dict:
+    """Refresh receipt/snapshot state immediately before the checkout can change."""
+    preserved = {
+        key: request[key]
+        for key in ("branch", "expected_sha", "expected_ref", "channel_retirement")
+        if key in request
+    }
+    refreshed = _source_completion_request(
+        opts, plan, snapshot_id, windows_resume, desktop, gateway_mode
+    )
+    refreshed.update(preserved)
+    return refreshed
 
 
 def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop, gateway_mode) -> dict:
@@ -1272,18 +1344,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print()
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
-
-    # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
-    # the post-update cron-jobs safety net. A deliberate opt-out is recorded as a skip with its
-    # reason, not as a failed step (see _record_pre_update_backup_outcome).
-    pre_update_snapshot_id = _m()._run_pre_update_backup(args)
-    _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
-
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
-    if _windows_gateway_resume:
-        import atexit as _atexit
-        _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
-
+    pre_update_snapshot_id = None
+    _windows_gateway_resume = None
 
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
     had_desktop_app_before_update = (
@@ -1336,6 +1398,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             target_ref = f"origin/{branch}"
 
     if use_zip_update:
+        pre_update_snapshot_id, _windows_gateway_resume = _begin_mutating_update(args)
+        completion_request = _refresh_completion_request_for_mutation(
+            completion_request, opts, _pre_update_plan, pre_update_snapshot_id,
+            _windows_gateway_resume, had_desktop_app_before_update, gateway_mode)
+        completion_request["branch"] = branch
+        if release_sha:
+            completion_request["expected_sha"] = release_sha
         try:
             _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update,
@@ -1382,6 +1451,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)
+        if _needs_in_place_merge_preflight(
+            git_cmd, branch, current_branch, switch_branch=opts.switch_branch
+        ):
+            _preflight_in_place_merge(git_cmd, target_ref)
+
+        pre_update_snapshot_id, _windows_gateway_resume = _begin_mutating_update(args)
+        completion_request = _refresh_completion_request_for_mutation(
+            completion_request, opts, _pre_update_plan, pre_update_snapshot_id,
+            _windows_gateway_resume, had_desktop_app_before_update, gateway_mode)
+        completion_request["branch"] = branch
+        if release_sha:
+            completion_request["expected_sha"] = release_sha
+
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
@@ -1413,6 +1495,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             git_cmd, branch, pre_pull_sha, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
     except subprocess.CalledProcessError as e:
+        # A Git transport failure may continue through the ZIP route. That route
+        # mutates the installation, so take its recovery snapshot and pause
+        # gateways only when we have actually admitted that fallback.
+        if _should_zip_fallback_on_update_error(e):
+            pre_update_snapshot_id, _windows_gateway_resume = _begin_mutating_update(args)
+            completion_request = _refresh_completion_request_for_mutation(
+                completion_request, opts, _pre_update_plan, pre_update_snapshot_id,
+                _windows_gateway_resume, had_desktop_app_before_update, gateway_mode,
+            )
         try:
             _handle_update_called_process_error(
                 e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
