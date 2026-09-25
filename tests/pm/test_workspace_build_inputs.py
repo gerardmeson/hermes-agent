@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from pm import workspace
+from pm.runtime import _inputs
 from tests.pm import _fixtures
 from pm.environment import managed_environment
 
@@ -51,6 +52,29 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
 
 build_editable = build_wheel
 ''', encoding="utf-8")
+
+
+def test_core_snapshot_retains_the_nested_pm_lockfile(tmp_path):
+    source = tmp_path / "core"
+    source.mkdir()
+    (source / "pyproject.toml").write_text(
+        '[project]\nname="fixture"\nversion="1.0"\n'
+        '[tool.setuptools.packages.find]\ninclude=["pm*"]\n',
+        encoding="utf-8",
+    )
+    (source / "uv.lock").write_text("root workspace lock", encoding="utf-8")
+    pm = source / "pm"
+    pm.mkdir()
+    (pm / "__init__.py").write_text("", encoding="utf-8")
+    (pm / "pyproject.toml").write_text("[project]\nname='pm-runtime'\nversion='1.0'\n", encoding="utf-8")
+    (pm / "uv.lock").write_text("PM runtime lock", encoding="utf-8")
+    destination = tmp_path / "workspace"
+
+    workspace._copy_core_inputs(source, destination)
+
+    assert not (destination / "uv.lock").exists()
+    assert (destination / "pm" / "uv.lock").read_text(encoding="utf-8") == "PM runtime lock"
+    assert len(_inputs(destination / "pm", Path(sys.executable))) == 64
 
 
 def test_real_build_inputs_stay_in_generated_root(tmp_path, monkeypatch):
