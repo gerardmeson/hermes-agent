@@ -704,6 +704,12 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         _bt.logger.debug("Skipping agent-browser close for expired session %s", task_id)
     else:
         try:
+            if (session_info.get("features") or {}).get("cdp_override"):
+                # `close` only detaches from a shared browser; close the session's own pinned tab first.
+                try:
+                    _session._run_browser_command(task_id, "tab", ["close"], timeout=10)
+                except Exception as e:
+                    _bt.logger.warning("agent-browser tab close failed for task %s: %s", task_id, e)
             _session._run_browser_command(task_id, "close", [], timeout=10)
             _bt.logger.debug("agent-browser close command completed for task %s", task_id)
         except Exception as e:

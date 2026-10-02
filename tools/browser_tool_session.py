@@ -835,8 +835,11 @@ def _dispatch_browser_command(
     # state: hybrid routing can create a local sidecar while a cloud provider stays configured.
     engine = _engine_override or _cloud._get_browser_engine()
     backend_args = ["--session", session_info["session_name"]]
+    shared_browser = False
     if session_info.get("cdp_url"):
         backend_args += ["--cdp", session_info["cdp_url"]]
+        # A user-supplied CDP browser holds tabs this session does not own (pinned tabs, other sessions).
+        shared_browser = bool((session_info.get("features") or {}).get("cdp_override"))
     else:
         if (bd_port := _bot_desktop_attach_port(session_info)) is not None:
             # A Chromium already runs on the Bot Desktop's shared profile (the human clicked the dock's
@@ -844,10 +847,15 @@ def _dispatch_browser_command(
             # a DevTools endpoint, so the session's daemon attaches to the port it advertises instead.
             # Same daemon (keyed by --session) either way, so snapshot refs stay valid across commands.
             backend_args += ["--cdp", str(bd_port)]
+            shared_browser = True
         if _cloud._is_headed_mode():
             backend_args.append("--headed")
         if engine != "auto" and not _bt._is_camofox_mode():
             backend_args += ["--engine", engine]
+    if shared_browser:
+        # Strict own-tab binding: open a fresh tab instead of adopting an existing one, never fall back
+        # to a neighbouring tab (needs an agent-browser release that supports --pin-tab).
+        backend_args.append("--pin-tab")
 
     argv = _agent_browser_argv(browser_cmd)
     spawn_command, spawn_args, stdin_payload = _shim_safe_args(argv[0], command, args)
