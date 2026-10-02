@@ -57,3 +57,12 @@ def test_cleanup_closes_only_the_sessions_own_tab_before_closing_the_daemon(monk
                         lambda task, command, args=None, timeout=None, **kw: order.append((command, list(args or []))) or {"success": True})
     lifecycle._cleanup_single_browser_session("task")
     assert order == [("tab", ["close"]), ("close", [])]
+
+
+def test_a_blank_own_tab_is_not_treated_as_a_private_page(monkeypatch):
+    """A pinned session opens its own about:blank tab; the private-page probe must not lock raw CDP on it."""
+    from tools import browser_tool_eval_policy as policy
+
+    monkeypatch.setattr(policy._session, "_run_browser_command",
+                        lambda *a, **k: {"success": True, "data": {"result": "about:blank"}})
+    assert policy._current_page_private_url("task") is None
