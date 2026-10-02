@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
@@ -19,6 +20,36 @@ from tools.browser_extension_router import routed_browser_handler
 logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
+
+# Tabs this task created through browser_cdp (task_id → target IDs). The user's browser holds tabs no task
+# owns (pinned tabs, other sessions), so page-level calls and target-acting Target.* methods may only name a
+# tab recorded here. In-process routing guard: it cannot stop a client that opens its own CDP socket.
+_OWNED_TARGETS: Dict[str, set] = {}
+_OWNED_TARGETS_LOCK = threading.Lock()
+_TARGET_ACTING_METHODS = {"Target.closeTarget", "Target.activateTarget", "Target.attachToTarget",
+                          "Target.sendMessageToTarget"}
+
+
+def _target_ownership_block(task_id: str, method: str, params: Dict[str, Any], target_id: Optional[str]) -> Optional[str]:
+    """Error JSON when the call would act on a tab this task did not create, else None."""
+    wanted = target_id or (params.get("targetId") if method in _TARGET_ACTING_METHODS else None)
+    if not wanted:
+        return None
+    with _OWNED_TARGETS_LOCK:
+        if wanted in _OWNED_TARGETS.get(task_id, ()):
+            return None
+    return tool_error(f"Blocked: tab {wanted!r} was not created by this task, so browser_cdp will not act on it "
+                      "(it may be a pinned or another session's tab). Open your own tab first with "
+                      "method='Target.createTarget', params={'url': 'about:blank'} and use the returned targetId.",
+                      method=method)
+
+
+def _record_target_ownership(task_id: str, method: str, params: Dict[str, Any], result: Any) -> None:
+    with _OWNED_TARGETS_LOCK:
+        if method == "Target.createTarget" and isinstance(result, dict) and result.get("targetId"):
+            _OWNED_TARGETS.setdefault(task_id, set()).add(result["targetId"])
+        elif method == "Target.closeTarget" and isinstance(result, dict) and result.get("success") is True:
+            _OWNED_TARGETS.get(task_id, set()).discard(params.get("targetId"))
 
 # Browser/target inspection that never reads page body/cookies/DOM/storage — stays
 # usable so the model can list tabs or navigate away from a blocked page.
@@ -267,6 +298,10 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     effective_task_id = task_id or "default"
 
     if frame_id:
+        from tools.browser_tool_cdp import _get_cdp_override_raw
+        if _get_cdp_override_raw():  # the supervisor's page may be a tab this task does not own
+            return tool_error("Blocked: frame_id routing is unavailable on a shared browser because the "
+                              "supervisor's page may be a pinned or another session's tab.", method=method)
         blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})
         if blocked:
             return blocked
@@ -294,6 +329,9 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
     if blocked:
         return blocked
+    blocked = _target_ownership_block(effective_task_id, method, call_params, target_id)
+    if blocked:
+        return blocked
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0
@@ -313,6 +351,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         logger.exception("browser_cdp unexpected error")
         return tool_error(f"Unexpected error: {type(exc).__name__}: {exc}", method=method)
 
+    _record_target_ownership(effective_task_id, method, call_params, result)
     payload: Dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_output(
         result, always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
         flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))}

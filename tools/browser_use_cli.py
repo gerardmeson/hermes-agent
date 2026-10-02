@@ -232,14 +232,25 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 
 
 def is_browser_use_cli_mode() -> bool:
-    """True when the Browser Use CLI replaces the built-in browser stack. Browser Use mode is the DEFAULT:
-    unset ``browser.backend`` ("") enables it whenever browser-harness is importable (a core dependency);
-    ``browser.backend: off`` keeps the built-in browser_* tools. Camofox always falls back to the built-in
-    tools (Firefox, custom HTTP API, no CDP surface for the harness)."""
+    """True when the Browser Use CLI replaces the built-in browser stack.
+
+    A shared CDP override must use the built-in target-owned route; Browser Use
+    exposes arbitrary Python/CDP helpers that can select another session's tab.
+    """
     if _camofox_active():
         return False
+    try:
+        from tools.browser_tool_cdp import _get_cdp_override_raw
+        if _get_cdp_override_raw():
+            return False
+    except Exception:
+        # Do not expose the unrestricted Browser Use route if the shared-profile
+        # policy cannot be resolved.
+        return False
     backend = get_browser_backend()
-    return backend == _BACKEND_KEY if backend else (is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_cli() is not None)
+    return backend == _BACKEND_KEY if backend else (
+        is_legacy_browser_use_cloud_config(_read_browser_cfg()) or _find_cli() is not None
+    )
 
 
 def default_downgrade_notice() -> Optional[str]:

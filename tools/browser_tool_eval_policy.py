@@ -49,7 +49,8 @@ def _current_page_private_url(effective_task_id: str) -> Optional[str]:
         url_result = _session._run_browser_command(effective_task_id, "eval", ["window.location.href"], timeout=5, _engine_override="auto")
         if url_result.get("success"):
             current_url = url_result.get("data", {}).get("result", "").strip().strip('"').strip("'")
-            if current_url and _url_blocked(_bt, current_url):
+            # A blank page exposes nothing (a pinned shared-browser session opens its own about:blank tab).
+            if current_url and current_url != "about:blank" and _url_blocked(_bt, current_url):
                 return current_url
     except Exception as exc:
         _bt.logger.debug("_current_page_private_url: probe failed (%s)", exc)

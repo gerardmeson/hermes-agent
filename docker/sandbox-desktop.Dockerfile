@@ -53,7 +53,7 @@ RUN for i in 1 2 3; do \
         npx --yes playwright@1 install --with-deps chromium && break || \
         { [ "$i" = 3 ] && exit 1; echo "playwright chromium install failed (attempt $i); retrying in 10s"; sleep 10; }; \
     done && chmod -R a+rX /opt/playwright && \
-    npm install -g --ignore-scripts --no-audit --fetch-retries=5 "agent-browser@^0.26.0" && \
+    npm install -g --ignore-scripts --no-audit --fetch-retries=5 "agent-browser@^0.38.2" && \
     agent-browser --version
 
 # cua-driver: computer_use's MCP driver. Pinned release tarball from the
