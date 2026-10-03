@@ -971,7 +971,8 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
     return True, has_retried_429
 
 
-def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
+def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap,
+                        model=None, base_url=None):
     # Already-exhausted credential: rotate immediately. Avoids the "cancel-between-429s" trap where
     # the local has_retried_429 resets per prompt and retries forever.
     current_entry = None
@@ -997,7 +998,21 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
-    if not has_retried_429 and not usage_limit_reached:
+    from agent.credential_pool import get_pool_rate_limit_policy
+    rotate_first = False
+    if get_pool_rate_limit_policy(getattr(pool, "provider", "")) == "rotate_first":
+        try:
+            has_alternative = getattr(pool, "has_alternative", None)
+            rotate_first = bool(
+                callable(has_alternative)
+                and has_alternative(credential_id=credential_id, api_key_hint=api_key_hint,
+                                    model=model, base_url=base_url)
+            )
+        except Exception as exc:
+            # This optional optimization must not break the standard retry path.
+            # Log the type, not potentially sensitive credential/store error text.
+            _ra().logger.warning("Cannot verify pool alternative; keeping retry-once (%s)", type(exc).__name__)
+    if not has_retried_429 and not usage_limit_reached and not rotate_first:
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
 
@@ -1117,6 +1132,7 @@ def recover_with_credential_pool(
         return _recover_rate_limit(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,
+            model=getattr(agent, "model", None), base_url=getattr(agent, "base_url", None),
         )
     if effective_reason == FailoverReason.model_entitlement:
         # The pool benches (credential, model) only and hands back the next entry that is not

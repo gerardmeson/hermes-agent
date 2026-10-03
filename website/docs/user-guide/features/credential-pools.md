@@ -47,6 +47,43 @@ Your request
   → Success → continue normally
 ```
 
+## Optional: Rotate Before the First Retry
+
+The default for a generic 429 is still `retry_once`. To try a different usable
+credential before waiting on the first rate limit, opt in per provider:
+
+```yaml
+credential_pool_rate_limit_policies:
+  anthropic: rotate_first
+```
+
+Or set it through the CLI:
+
+```bash
+hermes config set credential_pool_rate_limit_policies.anthropic rotate_first
+```
+
+Early rotation requires an identified failing credential and a different usable
+credential for the current model and endpoint. Duplicate entries sharing the
+same token do not count as an alternative. Existing account and model cooldowns
+still apply. If no alternative can be verified, Hermes keeps its same-account
+retry and provider backoff. If the alternative also returns a generic 429 and
+there is no further usable credential, that account receives the normal first
+retry/backoff; retries and exhausted-pool fallback remain bounded by the existing
+retry logic. The delay comes from the provider/backoff policy, not a fixed
+600-second value.
+
+Missing, invalid, or `retry_once` settings preserve the default. To revert:
+
+```bash
+hermes config set credential_pool_rate_limit_policies.anthropic retry_once
+```
+
+Explicit usage-limit, billing, auth, and upstream-aggregator handling is unchanged.
+An ordinary 429 may be transient; `rotate_first` is an opt-in latency trade-off,
+not a claim that the account has exhausted its subscription allowance. The
+prompt-cache warning above still applies.
+
 ## Quick Start
 
 If you already have an API key set in `.env`, Hermes auto-discovers it as a 1-key pool. To benefit from pooling, add more keys:

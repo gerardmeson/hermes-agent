@@ -606,6 +606,16 @@ def get_pool_strategy(provider: str) -> str:
     return strategy if strategy in SUPPORTED_POOL_STRATEGIES else STRATEGY_FILL_FIRST
 
 
+def get_pool_rate_limit_policy(provider: str) -> str:
+    """Opt-in early rotation; missing or invalid policies preserve retry-once."""
+    config = _load_config_safe()
+    policies = config.get("credential_pool_rate_limit_policies") if config else None
+    if not isinstance(policies, dict):
+        return "retry_once"
+    policy = str(policies.get(provider, "") or "").strip().lower()
+    return policy if policy in {"retry_once", "rotate_first"} else "retry_once"
+
+
 def _keyed_custom_pool_matches(
     pool_provider: str,
     provider_norm: str,
@@ -1047,6 +1057,34 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         with self._lock:
             available, _pending = self._available_entries(model=model)
             return bool(available)
+
+    def has_alternative(
+        self, *, credential_id: Optional[str] = None, api_key_hint: Optional[str] = None,
+        model: Optional[str] = None, base_url: Optional[str] = None,
+    ) -> bool:
+        """Whether a different usable credential serves this model and endpoint.
+
+        Do not lease or select a row just to decide whether early rotation helps.
+        Aliases of the failing token are not independent recovery candidates.
+        """
+        if not credential_id and not api_key_hint:
+            return False
+        with self._lock:
+            failed = self._find(lambda entry: entry.id == credential_id) if credential_id else None
+            if failed is None and api_key_hint:
+                failed = self._find(lambda entry: entry.runtime_api_key == api_key_hint)
+            if failed is None:
+                return False
+            failed_key = failed.runtime_api_key
+            available, _pending = self._available_entries(model=model)
+            return any(
+                entry.id != failed.id
+                and bool(entry.runtime_api_key)
+                and entry.runtime_api_key != failed_key
+                and (not api_key_hint or entry.runtime_api_key != api_key_hint)
+                and credential_pool_entry_serves_endpoint(entry, base_url)
+                for entry in available
+            )
 
     def lift_reopened_cooldowns(self, *, model: Optional[str] = None) -> bool:
         """Clear cooldowns that have elapsed or (Codex) reopened early, then report availability.
